@@ -1,0 +1,984 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>云底之弈</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 10px;
+        }
+
+        .game-container {
+            background: white;
+            border-radius: 15px;
+            padding: 15px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            width: 100%;
+            max-width: 450px;
+        }
+
+        .title {
+            text-align: center;
+            font-size: 22px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            text-align: center;
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 12px;
+        }
+
+        .stats {
+            display: flex;
+            justify-content: space-around;
+            margin-bottom: 12px;
+            padding: 8px;
+            background: #f0f0f0;
+            border-radius: 8px;
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: #666;
+        }
+
+        .stat-value {
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .board-container {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 9/10;
+            background: #f4d03f;
+            border-radius: 8px;
+            box-shadow: inset 0 0 15px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+
+        #gameCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+
+        .controls {
+            margin-top: 15px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 14px;
+            font-weight: bold;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            min-width: 100px;
+        }
+
+        button:active {
+            transform: scale(0.95);
+        }
+
+        .game-over-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            text-align: center;
+            max-width: 85%;
+        }
+
+        .winner-text {
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 15px;
+        }
+
+        .red-win { color: #e74c3c; }
+        .black-win { color: #2c3e50; }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <h1 class="title">⚔️ 云底之弈</h1>
+        <p class="subtitle">实时对战，无需等待回合！</p>
+        
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-label">红方冷却</div>
+                <div class="stat-value" id="redCooldown">0.0s</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">移动次数</div>
+                <div class="stat-value" id="moveCount">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">黑方冷却</div>
+                <div class="stat-value" id="blackCooldown">0.0s</div>
+            </div>
+        </div>
+
+        <div class="board-container">
+            <canvas id="gameCanvas"></canvas>
+        </div>
+
+        <div class="controls">
+            <button onclick="newGame()">新游戏</button>
+            <button onclick="cycleAIDifficulty()">AI: <span id="aiStatus">关闭</span></button>
+        </div>
+    </div>
+
+    <div class="game-over-modal" id="gameOverModal">
+        <div class="modal-content">
+            <div class="winner-text" id="winnerText"></div>
+            <button onclick="newGame()">再来一局</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Game state
+        let board = [];
+        let selectedPiece = null;
+        let validMoves = [];
+        let redCooldown = 0;
+        let blackCooldown = 0;
+        let moveCount = 0;
+        let gameOver = false;
+        let aiDifficulty = 0; // 0=off, 1=easy, 2=normal, 3=hard, 4=hell
+        let lastAIMove = 0;
+        let cellWidth, cellHeight;
+        
+        const COOLDOWN_TIME = 1500;
+        const AI_DIFFICULTIES = [
+            { name: '关闭', cooldown: 0, moveInterval: 0 },
+            { name: '简单', cooldown: 1500, moveInterval: 2000 },
+            { name: '普通', cooldown: 1000, moveInterval: 1500 },
+            { name: '困难', cooldown: 500, moveInterval: 1000 },
+            { name: '地狱', cooldown: 1000, moveInterval: 500 }
+        ];
+        
+        // Piece types
+        const pieces = {
+            '帥': { type: 'king', side: 'red' },
+            '將': { type: 'king', side: 'black' },
+            '仕': { type: 'advisor', side: 'red' },
+            '士': { type: 'advisor', side: 'black' },
+            '相': { type: 'elephant', side: 'red' },
+            '象': { type: 'elephant', side: 'black' },
+            '傌': { type: 'horse', side: 'red' },
+            '馬': { type: 'horse', side: 'black' },
+            '俥': { type: 'rook', side: 'red' },
+            '車': { type: 'rook', side: 'black' },
+            '炮': { type: 'cannon', side: 'red' },
+            '砲': { type: 'cannon', side: 'black' },
+            '兵': { type: 'pawn', side: 'red' },
+            '卒': { type: 'pawn', side: 'black' }
+        };
+
+        function initBoard() {
+            board = [
+                ['車', '馬', '象', '士', '將', '士', '象', '馬', '車'],
+                [null, null, null, null, null, null, null, null, null],
+                [null, '砲', null, null, null, null, null, '砲', null],
+                ['卒', null, '卒', null, '卒', null, '卒', null, '卒'],
+                [null, null, null, null, null, null, null, null, null],
+                [null, null, null, null, null, null, null, null, null],
+                ['兵', null, '兵', null, '兵', null, '兵', null, '兵'],
+                [null, '炮', null, null, null, null, null, '炮', null],
+                [null, null, null, null, null, null, null, null, null],
+                ['俥', '傌', '相', '仕', '帥', '仕', '相', '傌', '俥']
+            ];
+        }
+
+        function setupCanvas() {
+            const container = document.querySelector('.board-container');
+            const rect = container.getBoundingClientRect();
+            
+            // Set canvas actual size
+            canvas.width = rect.width * window.devicePixelRatio;
+            canvas.height = rect.height * window.devicePixelRatio;
+            
+            // Scale for high DPI displays
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+            
+            // Calculate cell dimensions
+            cellWidth = rect.width / 9;
+            cellHeight = rect.height / 10;
+        }
+
+        function drawBoard() {
+            const width = canvas.width / window.devicePixelRatio;
+            const height = canvas.height / window.devicePixelRatio;
+            
+            // Clear canvas
+            ctx.clearRect(0, 0, width, height);
+            
+            // Draw board background
+            ctx.fillStyle = '#f4d03f';
+            ctx.fillRect(0, 0, width, height);
+            
+            // Draw board lines
+            ctx.strokeStyle = '#8B4513';
+            ctx.lineWidth = 1.5;
+            
+            // Draw horizontal lines
+            for (let i = 0; i < 10; i++) {
+                ctx.beginPath();
+                ctx.moveTo(cellWidth * 0.5, cellHeight * (i + 0.5));
+                ctx.lineTo(width - cellWidth * 0.5, cellHeight * (i + 0.5));
+                ctx.stroke();
+            }
+            
+            // Draw vertical lines - full lines for edges, broken for middle
+            for (let i = 0; i < 9; i++) {
+                if (i === 0 || i === 8) {
+                    // Full vertical lines on edges
+                    ctx.beginPath();
+                    ctx.moveTo(cellWidth * (i + 0.5), cellHeight * 0.5);
+                    ctx.lineTo(cellWidth * (i + 0.5), height - cellHeight * 0.5);
+                    ctx.stroke();
+                } else {
+                    // Broken lines in the middle (river)
+                    ctx.beginPath();
+                    ctx.moveTo(cellWidth * (i + 0.5), cellHeight * 0.5);
+                    ctx.lineTo(cellWidth * (i + 0.5), cellHeight * 4.5);
+                    ctx.stroke();
+                    
+                    ctx.beginPath();
+                    ctx.moveTo(cellWidth * (i + 0.5), cellHeight * 5.5);
+                    ctx.lineTo(cellWidth * (i + 0.5), height - cellHeight * 0.5);
+                    ctx.stroke();
+                }
+            }
+            
+            // Draw river
+            ctx.fillStyle = 'rgba(100, 150, 200, 0.15)';
+            ctx.fillRect(cellWidth * 0.5, cellHeight * 4.5, width - cellWidth, cellHeight);
+            
+            // Draw palace crosses
+            ctx.strokeStyle = '#8B4513';
+            ctx.lineWidth = 1.5;
+            
+            // Top palace
+            ctx.beginPath();
+            ctx.moveTo(cellWidth * 3.5, cellHeight * 0.5);
+            ctx.lineTo(cellWidth * 5.5, cellHeight * 2.5);
+            ctx.stroke();
+            
+            ctx.beginPath();
+            ctx.moveTo(cellWidth * 5.5, cellHeight * 0.5);
+            ctx.lineTo(cellWidth * 3.5, cellHeight * 2.5);
+            ctx.stroke();
+            
+            // Bottom palace
+            ctx.beginPath();
+            ctx.moveTo(cellWidth * 3.5, cellHeight * 7.5);
+            ctx.lineTo(cellWidth * 5.5, cellHeight * 9.5);
+            ctx.stroke();
+            
+            ctx.beginPath();
+            ctx.moveTo(cellWidth * 5.5, cellHeight * 7.5);
+            ctx.lineTo(cellWidth * 3.5, cellHeight * 9.5);
+            ctx.stroke();
+            
+            // Draw valid moves
+            if (validMoves.length > 0) {
+                ctx.fillStyle = 'rgba(0, 255, 0, 0.4)';
+                validMoves.forEach(move => {
+                    ctx.beginPath();
+                    ctx.arc(
+                        cellWidth * (move.x + 0.5),
+                        cellHeight * (move.y + 0.5),
+                        cellWidth * 0.15,
+                        0,
+                        Math.PI * 2
+                    );
+                    ctx.fill();
+                });
+            }
+            
+            // Draw pieces
+            for (let y = 0; y < 10; y++) {
+                for (let x = 0; x < 9; x++) {
+                    if (board[y][x]) {
+                        drawPiece(x, y, board[y][x]);
+                    }
+                }
+            }
+            
+            // Draw cooldown bars
+            if (redCooldown > 0) {
+                ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+                ctx.fillRect(0, height - 5, width * (redCooldown / COOLDOWN_TIME), 5);
+            }
+            
+            if (blackCooldown > 0) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+                ctx.fillRect(0, 0, width * (blackCooldown / COOLDOWN_TIME), 5);
+            }
+        }
+
+        function drawPiece(x, y, piece) {
+            const centerX = cellWidth * (x + 0.5);
+            const centerY = cellHeight * (y + 0.5);
+            const radius = Math.min(cellWidth, cellHeight) * 0.35;
+            
+            // Draw piece background
+            ctx.fillStyle = '#FFF8DC';
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Draw piece border
+            ctx.strokeStyle = pieces[piece].side === 'red' ? '#e74c3c' : '#2c3e50';
+            ctx.lineWidth = 2.5;
+            ctx.stroke();
+            
+            // Highlight selected piece
+            if (selectedPiece && selectedPiece.x === x && selectedPiece.y === y) {
+                ctx.strokeStyle = '#f39c12';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+            }
+            
+            // Draw piece text
+            ctx.fillStyle = pieces[piece].side === 'red' ? '#e74c3c' : '#2c3e50';
+            ctx.font = `bold ${radius}px Arial`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(piece, centerX, centerY);
+        }
+
+        function getValidMoves(x, y) {
+            const piece = board[y][x];
+            if (!piece) return [];
+            
+            const pieceInfo = pieces[piece];
+            const moves = [];
+            
+            switch (pieceInfo.type) {
+                case 'king':
+                    const palaceX = [3, 4, 5];
+                    const palaceY = pieceInfo.side === 'red' ? [7, 8, 9] : [0, 1, 2];
+                    
+                    [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dx, dy]) => {
+                        const nx = x + dx;
+                        const ny = y + dy;
+                        if (palaceX.includes(nx) && palaceY.includes(ny)) {
+                            const target = board[ny][nx];
+                            if (!target || pieces[target].side !== pieceInfo.side) {
+                                moves.push({ x: nx, y: ny });
+                            }
+                        }
+                    });
+                    break;
+                    
+                case 'advisor':
+                    const advPalaceX = [3, 4, 5];
+                    const advPalaceY = pieceInfo.side === 'red' ? [7, 8, 9] : [0, 1, 2];
+                    
+                    [[1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(([dx, dy]) => {
+                        const nx = x + dx;
+                        const ny = y + dy;
+                        if (advPalaceX.includes(nx) && advPalaceY.includes(ny)) {
+                            const target = board[ny][nx];
+                            if (!target || pieces[target].side !== pieceInfo.side) {
+                                moves.push({ x: nx, y: ny });
+                            }
+                        }
+                    });
+                    break;
+                    
+                case 'elephant':
+                    const riverY = pieceInfo.side === 'red' ? 5 : 4;
+                    
+                    [[2, 2], [2, -2], [-2, 2], [-2, -2]].forEach(([dx, dy]) => {
+                        const nx = x + dx;
+                        const ny = y + dy;
+                        const blockX = x + dx / 2;
+                        const blockY = y + dy / 2;
+                        
+                        if (nx >= 0 && nx < 9 && ny >= 0 && ny < 10) {
+                            if ((pieceInfo.side === 'red' && ny >= riverY) || 
+                                (pieceInfo.side === 'black' && ny <= riverY)) {
+                                if (!board[blockY][blockX]) {
+                                    const target = board[ny][nx];
+                                    if (!target || pieces[target].side !== pieceInfo.side) {
+                                        moves.push({ x: nx, y: ny });
+                                    }
+                                }
+                            }
+                        }
+                    });
+                    break;
+                    
+                case 'horse':
+                    [
+                        [1, 2], [1, -2], [-1, 2], [-1, -2],
+                        [2, 1], [2, -1], [-2, 1], [-2, -1]
+                    ].forEach(([dx, dy]) => {
+                        const nx = x + dx;
+                        const ny = y + dy;
+                        
+                        if (nx >= 0 && nx < 9 && ny >= 0 && ny < 10) {
+                            const blockX = x + (Math.abs(dx) === 2 ? dx / 2 : 0);
+                            const blockY = y + (Math.abs(dy) === 2 ? dy / 2 : 0);
+                            
+                            if (!board[blockY][blockX]) {
+                                const target = board[ny][nx];
+                                if (!target || pieces[target].side !== pieceInfo.side) {
+                                    moves.push({ x: nx, y: ny });
+                                }
+                            }
+                        }
+                    });
+                    break;
+                    
+                case 'rook':
+                    // Horizontal moves
+                    for (let i = x + 1; i < 9; i++) {
+                        const target = board[y][i];
+                        if (target) {
+                            if (pieces[target].side !== pieceInfo.side) {
+                                moves.push({ x: i, y: y });
+                            }
+                            break;
+                        }
+                        moves.push({ x: i, y: y });
+                    }
+                    for (let i = x - 1; i >= 0; i--) {
+                        const target = board[y][i];
+                        if (target) {
+                            if (pieces[target].side !== pieceInfo.side) {
+                                moves.push({ x: i, y: y });
+                            }
+                            break;
+                        }
+                        moves.push({ x: i, y: y });
+                    }
+                    // Vertical moves
+                    for (let i = y + 1; i < 10; i++) {
+                        const target = board[i][x];
+                        if (target) {
+                            if (pieces[target].side !== pieceInfo.side) {
+                                moves.push({ x: x, y: i });
+                            }
+                            break;
+                        }
+                        moves.push({ x: x, y: i });
+                    }
+                    for (let i = y - 1; i >= 0; i--) {
+                        const target = board[i][x];
+                        if (target) {
+                            if (pieces[target].side !== pieceInfo.side) {
+                                moves.push({ x: x, y: i });
+                            }
+                            break;
+                        }
+                        moves.push({ x: x, y: i });
+                    }
+                    break;
+                    
+                case 'cannon':
+                    // Horizontal movement
+                    for (let i = x + 1; i < 9; i++) {
+                        if (board[y][i]) {
+                            for (let j = i + 1; j < 9; j++) {
+                                const target = board[y][j];
+                                if (target) {
+                                    if (pieces[target].side !== pieceInfo.side) {
+                                        moves.push({ x: j, y: y });
+                                    }
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                        moves.push({ x: i, y: y });
+                    }
+                    for (let i = x - 1; i >= 0; i--) {
+                        if (board[y][i]) {
+                            for (let j = i - 1; j >= 0; j--) {
+                                const target = board[y][j];
+                                if (target) {
+                                    if (pieces[target].side !== pieceInfo.side) {
+                                        moves.push({ x: j, y: y });
+                                    }
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                        moves.push({ x: i, y: y });
+                    }
+                    // Vertical movement
+                    for (let i = y + 1; i < 10; i++) {
+                        if (board[i][x]) {
+                            for (let j = i + 1; j < 10; j++) {
+                                const target = board[j][x];
+                                if (target) {
+                                    if (pieces[target].side !== pieceInfo.side) {
+                                        moves.push({ x: x, y: j });
+                                    }
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                        moves.push({ x: x, y: i });
+                    }
+                    for (let i = y - 1; i >= 0; i--) {
+                        if (board[i][x]) {
+                            for (let j = i - 1; j >= 0; j--) {
+                                const target = board[j][x];
+                                if (target) {
+                                    if (pieces[target].side !== pieceInfo.side) {
+                                        moves.push({ x: x, y: j });
+                                    }
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                        moves.push({ x: x, y: i });
+                    }
+                    break;
+                    
+                case 'pawn':
+                    const forward = pieceInfo.side === 'red' ? -1 : 1;
+                    const crossedRiver = pieceInfo.side === 'red' ? y < 5 : y > 4;
+                    
+                    const ny = y + forward;
+                    if (ny >= 0 && ny < 10) {
+                        const target = board[ny][x];
+                        if (!target || pieces[target].side !== pieceInfo.side) {
+                            moves.push({ x: x, y: ny });
+                        }
+                    }
+                    
+                    if (crossedRiver) {
+                        [-1, 1].forEach(dx => {
+                            const nx = x + dx;
+                            if (nx >= 0 && nx < 9) {
+                                const target = board[y][nx];
+                                if (!target || pieces[target].side !== pieceInfo.side) {
+                                    moves.push({ x: nx, y: y });
+                                }
+                            }
+                        });
+                    }
+                    break;
+            }
+            
+            return moves;
+        }
+
+        function handleClick(e) {
+            if (gameOver) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const x = Math.floor((e.clientX - rect.left) / cellWidth);
+            const y = Math.floor((e.clientY - rect.top) / cellHeight);
+            
+            if (x < 0 || x >= 9 || y < 0 || y >= 10) return;
+            
+            const piece = board[y][x];
+            
+            if (selectedPiece) {
+                // Check if selected piece still exists (might have been captured by AI)
+                const selectedPieceStillExists = board[selectedPiece.y][selectedPiece.x];
+                
+                if (!selectedPieceStillExists) {
+                    // Selected piece was captured, clear selection
+                    selectedPiece = null;
+                    validMoves = [];
+                    drawBoard();
+                    return;
+                }
+                
+                const validMove = validMoves.find(m => m.x === x && m.y === y);
+                
+                if (validMove) {
+                    const movingSide = pieces[board[selectedPiece.y][selectedPiece.x]].side;
+                    if ((movingSide === 'red' && redCooldown > 0) || 
+                        (movingSide === 'black' && blackCooldown > 0)) {
+                        return;
+                    }
+                    
+                    const capturedPiece = board[y][x];
+                    board[y][x] = board[selectedPiece.y][selectedPiece.x];
+                    board[selectedPiece.y][selectedPiece.x] = null;
+                    
+                    if (movingSide === 'red') {
+                        redCooldown = COOLDOWN_TIME;
+                    } else {
+                        blackCooldown = COOLDOWN_TIME;
+                    }
+                    
+                    moveCount++;
+                    document.getElementById('moveCount').textContent = moveCount;
+                    
+                    if (capturedPiece && pieces[capturedPiece].type === 'king') {
+                        endGame(movingSide);
+                    }
+                    
+                    selectedPiece = null;
+                    validMoves = [];
+                } else if (piece && pieces[piece].side === pieces[board[selectedPiece.y][selectedPiece.x]].side) {
+                    selectedPiece = { x, y };
+                    validMoves = getValidMoves(x, y);
+                } else {
+                    selectedPiece = null;
+                    validMoves = [];
+                }
+            } else if (piece) {
+                selectedPiece = { x, y };
+                validMoves = getValidMoves(x, y);
+            }
+            
+            drawBoard();
+        }
+
+        function handleTouch(e) {
+            e.preventDefault();
+            const touch = e.touches[0];
+            const mouseEvent = new MouseEvent('click', {
+                clientX: touch.clientX,
+                clientY: touch.clientY
+            });
+            handleClick(mouseEvent);
+        }
+
+        function updateCooldowns() {
+            const dt = 50;
+            
+            // Clear selection if selected piece no longer exists
+            if (selectedPiece && !board[selectedPiece.y][selectedPiece.x]) {
+                selectedPiece = null;
+                validMoves = [];
+            }
+            
+            if (redCooldown > 0) {
+                redCooldown = Math.max(0, redCooldown - dt);
+                document.getElementById('redCooldown').textContent = (redCooldown / 1000).toFixed(1) + 's';
+            } else {
+                document.getElementById('redCooldown').textContent = '0.0s';
+            }
+            
+            if (blackCooldown > 0) {
+                blackCooldown = Math.max(0, blackCooldown - dt);
+                document.getElementById('blackCooldown').textContent = (blackCooldown / 1000).toFixed(1) + 's';
+            } else {
+                document.getElementById('blackCooldown').textContent = '0.0s';
+            }
+            
+            if (aiDifficulty > 0 && !gameOver && blackCooldown === 0) {
+                const now = Date.now();
+                const aiConfig = AI_DIFFICULTIES[aiDifficulty];
+                if (now - lastAIMove > aiConfig.moveInterval) {
+                    makeAIMove();
+                    lastAIMove = now;
+                }
+            }
+            
+            drawBoard();
+        }
+
+        function makeAIMove() {
+            const blackPieces = [];
+            for (let y = 0; y < 10; y++) {
+                for (let x = 0; x < 9; x++) {
+                    const piece = board[y][x];
+                    if (piece && pieces[piece].side === 'black') {
+                        blackPieces.push({ x, y, piece });
+                    }
+                }
+            }
+            
+            // For hell difficulty, prioritize king safety
+            if (aiDifficulty === 4) { // Hell mode
+                // Find black king position
+                let kingPos = null;
+                for (let y = 0; y < 10; y++) {
+                    for (let x = 0; x < 9; x++) {
+                        if (board[y][x] === '將') {
+                            kingPos = { x, y };
+                            break;
+                        }
+                    }
+                    if (kingPos) break;
+                }
+                
+                if (kingPos && isKingUnderAttack(kingPos.x, kingPos.y)) {
+                    // King is under attack, try to move it to safety
+                    const kingMoves = getValidMoves(kingPos.x, kingPos.y);
+                    const safeMoves = kingMoves.filter(move => !isPositionUnderAttack(move.x, move.y, 'black'));
+                    
+                    if (safeMoves.length > 0) {
+                        // Move king to safety
+                        const safeMove = safeMoves[Math.floor(Math.random() * safeMoves.length)];
+                        board[safeMove.y][safeMove.x] = '將';
+                        board[kingPos.y][kingPos.x] = null;
+                        
+                        const aiConfig = AI_DIFFICULTIES[aiDifficulty];
+                        blackCooldown = aiConfig.cooldown;
+                        moveCount++;
+                        document.getElementById('moveCount').textContent = moveCount;
+                        return;
+                    }
+                    
+                    // If king can't move to safety, try to block or capture the attacker
+                    const attackers = findAttackers(kingPos.x, kingPos.y, 'black');
+                    if (attackers.length > 0) {
+                        // Try to capture the attacker
+                        for (const piecePos of blackPieces) {
+                            const moves = getValidMoves(piecePos.x, piecePos.y);
+                            for (const attacker of attackers) {
+                                if (moves.some(m => m.x === attacker.x && m.y === attacker.y)) {
+                                    // Can capture the attacker
+                                    board[attacker.y][attacker.x] = board[piecePos.y][piecePos.x];
+                                    board[piecePos.y][piecePos.x] = null;
+                                    
+                                    const aiConfig = AI_DIFFICULTIES[aiDifficulty];
+                                    blackCooldown = aiConfig.cooldown;
+                                    moveCount++;
+                                    document.getElementById('moveCount').textContent = moveCount;
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Normal AI logic (with preference for capturing)
+            blackPieces.sort(() => Math.random() - 0.5);
+            
+            // In hell mode, look for the best capture move
+            if (aiDifficulty === 4) {
+                let bestCapture = null;
+                let bestValue = 0;
+                
+                for (const piecePos of blackPieces) {
+                    const moves = getValidMoves(piecePos.x, piecePos.y);
+                    for (const move of moves) {
+                        const target = board[move.y][move.x];
+                        if (target && pieces[target].side === 'red') {
+                            const value = getPieceValue(target);
+                            if (value > bestValue) {
+                                bestValue = value;
+                                bestCapture = { from: piecePos, to: move };
+                            }
+                        }
+                    }
+                }
+                
+                if (bestCapture) {
+                    const capturedPiece = board[bestCapture.to.y][bestCapture.to.x];
+                    board[bestCapture.to.y][bestCapture.to.x] = board[bestCapture.from.y][bestCapture.from.x];
+                    board[bestCapture.from.y][bestCapture.from.x] = null;
+                    
+                    const aiConfig = AI_DIFFICULTIES[aiDifficulty];
+                    blackCooldown = aiConfig.cooldown;
+                    moveCount++;
+                    document.getElementById('moveCount').textContent = moveCount;
+                    
+                    if (capturedPiece && pieces[capturedPiece].type === 'king') {
+                        endGame('black');
+                    }
+                    return;
+                }
+            }
+            
+            // Default move logic
+            for (const piecePos of blackPieces) {
+                const moves = getValidMoves(piecePos.x, piecePos.y);
+                
+                if (moves.length > 0) {
+                    const captureMoves = moves.filter(m => {
+                        const target = board[m.y][m.x];
+                        return target && pieces[target].side === 'red';
+                    });
+                    
+                    const selectedMove = captureMoves.length > 0 ? 
+                        captureMoves[Math.floor(Math.random() * captureMoves.length)] :
+                        moves[Math.floor(Math.random() * moves.length)];
+                    
+                    const capturedPiece = board[selectedMove.y][selectedMove.x];
+                    board[selectedMove.y][selectedMove.x] = board[piecePos.y][piecePos.x];
+                    board[piecePos.y][piecePos.x] = null;
+                    
+                    const aiConfig = AI_DIFFICULTIES[aiDifficulty];
+                    blackCooldown = aiConfig.cooldown;
+                    
+                    moveCount++;
+                    document.getElementById('moveCount').textContent = moveCount;
+                    
+                    if (capturedPiece && pieces[capturedPiece].type === 'king') {
+                        endGame('black');
+                    }
+                    
+                    break;
+                }
+            }
+        }
+        
+        function isKingUnderAttack(kingX, kingY) {
+            return isPositionUnderAttack(kingX, kingY, 'black');
+        }
+        
+        function isPositionUnderAttack(posX, posY, defendingSide) {
+            const attackingSide = defendingSide === 'red' ? 'black' : 'red';
+            
+            for (let y = 0; y < 10; y++) {
+                for (let x = 0; x < 9; x++) {
+                    const piece = board[y][x];
+                    if (piece && pieces[piece].side === attackingSide) {
+                        const moves = getValidMoves(x, y);
+                        if (moves.some(m => m.x === posX && m.y === posY)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+        
+        function findAttackers(targetX, targetY, defendingSide) {
+            const attackers = [];
+            const attackingSide = defendingSide === 'red' ? 'black' : 'red';
+            
+            for (let y = 0; y < 10; y++) {
+                for (let x = 0; x < 9; x++) {
+                    const piece = board[y][x];
+                    if (piece && pieces[piece].side === attackingSide) {
+                        const moves = getValidMoves(x, y);
+                        if (moves.some(m => m.x === targetX && m.y === targetY)) {
+                            attackers.push({ x, y, piece });
+                        }
+                    }
+                }
+            }
+            return attackers;
+        }
+        
+        function getPieceValue(piece) {
+            const pieceInfo = pieces[piece];
+            switch (pieceInfo.type) {
+                case 'king': return 1000;
+                case 'rook': return 90;
+                case 'cannon': return 45;
+                case 'horse': return 40;
+                case 'elephant': return 20;
+                case 'advisor': return 20;
+                case 'pawn': return 10;
+                default: return 0;
+            }
+        }
+
+        function cycleAIDifficulty() {
+            aiDifficulty = (aiDifficulty + 1) % AI_DIFFICULTIES.length;
+            const aiConfig = AI_DIFFICULTIES[aiDifficulty];
+            document.getElementById('aiStatus').textContent = aiConfig.name;
+            
+            if (aiDifficulty > 0) {
+                lastAIMove = Date.now();
+            }
+        }
+
+        function endGame(winner) {
+            gameOver = true;
+            const modal = document.getElementById('gameOverModal');
+            const winnerText = document.getElementById('winnerText');
+            
+            winnerText.textContent = winner === 'red' ? '红方胜利！' : '黑方胜利！';
+            winnerText.className = winner === 'red' ? 'winner-text red-win' : 'winner-text black-win';
+            
+            modal.style.display = 'flex';
+        }
+
+        function newGame() {
+            initBoard();
+            selectedPiece = null;
+            validMoves = [];
+            redCooldown = 0;
+            blackCooldown = 0;
+            moveCount = 0;
+            gameOver = false;
+            lastAIMove = Date.now();
+            
+            document.getElementById('moveCount').textContent = '0';
+            document.getElementById('gameOverModal').style.display = 'none';
+            
+            setupCanvas();
+            drawBoard();
+        }
+
+        // Initialize game
+        window.addEventListener('resize', () => {
+            setupCanvas();
+            drawBoard();
+        });
+
+        canvas.addEventListener('click', handleClick);
+        canvas.addEventListener('touchstart', handleTouch, { passive: false });
+
+        // Initial setup
+        initBoard();
+        setupCanvas();
+        drawBoard();
+
+        // Start game loop
+        setInterval(updateCooldowns, 50);
+    </script>
+</body>
+</html>
